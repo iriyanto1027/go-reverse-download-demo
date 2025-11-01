@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  # LocalStack - Local AWS Services (S3)
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack-s3
+    ports:
+      - "4566:4566"            # LocalStack Gateway
+      - "4510-4559:4510-4559"  # External services port range
+    environment:
+      - SERVICES=s3
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - "./localstack-data:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - app-network
+
+  # Server - Cloud-hosted application
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: file-download-server
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_PORT=8080
+      - SERVER_HOST=0.0.0.0
+      - AWS_REGION=us-east-1
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - S3_BUCKET_NAME=file-download-system-uploads
+      - S3_PRESIGNED_URL_EXPIRY=15m
+      - S3_CHUNK_SIZE=5242880
+      - JWT_SECRET=dev-secret-key-change-in-production
+      - LOG_LEVEL=debug
+    depends_on:
+      - localstack
+    networks:
+      - app-network
+    # Optional: Uncomment to run server without building image
+    # volumes:
+    #   - .:/app
+    # command: go run ./server/main.go
+
+  # Client - On-premise client (simulated)
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: file-download-client
+    environment:
+      - CLIENT_ID=restaurant-1
+      - SERVER_WS_URL=ws://server:8080/ws/connect
+      - CLIENT_TOKEN=dev-token-restaurant-1
+      - FILE_PATH=/data/test-file.bin
+      - LOG_LEVEL=debug
+    depends_on:
+      - server
+    volumes:
+      - "./test-data:/data"
+    networks:
+      - app-network
+    # Optional: Uncomment to run client without building image
+    # volumes:
+    #   - .:/app
+    #   - ./test-data:/data
+    # command: go run ./client/main.go
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  localstack-data:
