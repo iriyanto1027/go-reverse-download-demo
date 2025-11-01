@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"sort"
 	"time"
 
 	"github.com/iriyanto1027/file-download-system/server/models"
@@ -99,7 +100,7 @@ func (h *Handler) TriggerDownload(w http.ResponseWriter, r *http.Request) {
 
 	// Set default file path if not provided
 	if req.FilePath == "" {
-		req.FilePath = "/data/report.bin"
+		req.FilePath = "/data/test-file.bin"
 	}
 
 	// Generate upload ID
@@ -142,6 +143,8 @@ func (h *Handler) TriggerDownload(w http.ResponseWriter, r *http.Request) {
 		h.chunkSize,
 		multipartUpload.TotalParts,
 	)
+	// Set the S3 multipart upload ID
+	uploadStatus.SetS3UploadID(multipartUpload.UploadID)
 	h.wsManager.RegisterUpload(uploadStatus)
 
 	// Prepare download command
@@ -300,8 +303,23 @@ func (h *Handler) HandleResponse(clientID string, msg *sharedModels.ResponseMess
 					upload.MarkCompleted()
 					log.Printf("Upload %s completed successfully", uploadID)
 
+					// Extract ETags from payload
+					var etags map[int]string
+					if etagsRaw, ok := payload["etags"].(map[string]interface{}); ok {
+						etags = make(map[int]string)
+						for k, v := range etagsRaw {
+							// Convert string key to int
+							var partNum int
+							if _, err := fmt.Sscanf(k, "%d", &partNum); err == nil {
+								if etag, ok := v.(string); ok {
+									etags[partNum] = etag
+								}
+							}
+						}
+					}
+
 					// Complete the multipart upload on S3
-					if etags := upload.GetETags(); len(etags) > 0 {
+					if len(etags) > 0 {
 						parts := make([]s3.CompletedPart, 0, len(etags))
 						for partNum, etag := range etags {
 							parts = append(parts, s3.CompletedPart{
@@ -310,13 +328,26 @@ func (h *Handler) HandleResponse(clientID string, msg *sharedModels.ResponseMess
 							})
 						}
 
+						// CRITICAL: Sort parts by PartNumber to ensure correct order for S3
+						sort.Slice(parts, func(i, j int) bool {
+							return parts[i].PartNumber < parts[j].PartNumber
+						})
+
+						log.Printf("Completing multipart upload %s with %d parts", uploadID, len(parts))
+
 						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 						defer cancel()
 
-						if err := h.s3Client.CompleteMultipartUpload(ctx, upload.S3Key, uploadID, parts); err != nil {
-							log.Printf("Failed to complete multipart upload: %v", err)
+						// Use S3UploadID from upload status, not internal uploadID
+						s3UploadID := upload.GetS3UploadID()
+						if err := h.s3Client.CompleteMultipartUpload(ctx, upload.S3Key, s3UploadID, parts); err != nil {
+							log.Printf("❌ Failed to complete multipart upload: %v", err)
 							upload.MarkFailed(err.Error())
+						} else {
+							log.Printf("✅ Multipart upload %s completed on S3", s3UploadID)
 						}
+					} else {
+						log.Printf("⚠️ No ETags found in payload, cannot complete multipart upload")
 					}
 
 				case sharedModels.ResponseStatusError:
@@ -326,7 +357,7 @@ func (h *Handler) HandleResponse(clientID string, msg *sharedModels.ResponseMess
 					// Abort the multipart upload
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					h.s3Client.AbortMultipartUpload(ctx, upload.S3Key, uploadID)
+					h.s3Client.AbortMultipartUpload(ctx, upload.S3Key, upload.GetS3UploadID())
 
 				case sharedModels.ResponseStatusCancelled:
 					upload.MarkCancelled()
@@ -335,7 +366,7 @@ func (h *Handler) HandleResponse(clientID string, msg *sharedModels.ResponseMess
 					// Abort the multipart upload
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
-					h.s3Client.AbortMultipartUpload(ctx, upload.S3Key, uploadID)
+					h.s3Client.AbortMultipartUpload(ctx, upload.S3Key, upload.GetS3UploadID())
 				}
 			}
 		}

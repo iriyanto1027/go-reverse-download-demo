@@ -65,7 +65,7 @@ func main() {
 	fmt.Println("🔧 Initializing WebSocket manager...")
 	wsManager := websocket.NewManager(websocket.Config{
 		PingInterval:  30 * time.Second,
-		ClientTimeout: 90 * time.Second,
+		ClientTimeout: 300 * time.Second, // 5 minutes for long-running uploads
 		ReadLimit:     1024 * 1024, // 1MB
 	}, nil) // Handler will be set later
 	fmt.Println("✅ WebSocket manager initialized")

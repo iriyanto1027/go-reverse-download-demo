@@ -35,33 +35,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Create WebSocket client (without handler first)
+	// Create WebSocket client without handler first
 	wsClient := websocket.NewClient(websocket.Config{
 		ClientID:  cfg.ClientID,
 		ServerURL: cfg.ServerWSURL,
 		Token:     cfg.ClientToken,
 	}, nil)
 
-	// Create command handler
+	// Create command handler with the client
 	commandHandler := handler.NewCommandHandler(wsClient, cfg.FilePath)
 
-	// Set the command handler for WebSocket client
-	// We need to update the client's handler
-	wsClient = websocket.NewClient(websocket.Config{
-		ClientID:  cfg.ClientID,
-		ServerURL: cfg.ServerWSURL,
-		Token:     cfg.ClientToken,
-	}, commandHandler)
-
-	// Update command handler with new client instance
-	commandHandler = handler.NewCommandHandler(wsClient, cfg.FilePath)
-
-	// Recreate client with handler
-	wsClient = websocket.NewClient(websocket.Config{
-		ClientID:  cfg.ClientID,
-		ServerURL: cfg.ServerWSURL,
-		Token:     cfg.ClientToken,
-	}, commandHandler)
+	// Update the client to use the handler
+	wsClient.SetMessageHandler(commandHandler)
 
 	fmt.Println("🔧 Starting WebSocket client...")
 	fmt.Println("✅ Client ready and waiting for commands...")

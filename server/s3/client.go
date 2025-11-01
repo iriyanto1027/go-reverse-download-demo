@@ -3,6 +3,7 @@ package s3
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -143,6 +144,7 @@ func (c *Client) InitiateMultipartUpload(ctx context.Context, cfg MultipartUploa
 	}
 
 	uploadID := aws.ToString(output.UploadId)
+	log.Printf("🔑 S3 CreateMultipartUpload returned uploadID: %s", uploadID)
 
 	// Calculate number of parts
 	totalParts := int(cfg.FileSize / cfg.ChunkSize)
@@ -171,6 +173,12 @@ func (c *Client) InitiateMultipartUpload(ctx context.Context, cfg MultipartUploa
 			return nil, fmt.Errorf("failed to generate presigned URL for part %d: %w", partNumber, err)
 		}
 
+		if i == 0 {
+			// Log first presigned URL to verify it points to correct endpoint
+			log.Printf("📍 Sample presigned URL (part 1): %s", request.URL)
+			log.Printf("   UploadID in presigned URL: %s", uploadID)
+		}
+
 		presignedURLs[i] = PresignedURL{
 			PartNumber: partNumber,
 			URL:        request.URL,
@@ -195,6 +203,11 @@ func (c *Client) CompleteMultipartUpload(ctx context.Context, key, uploadID stri
 			ETag:       aws.String(part.ETag),
 			PartNumber: aws.Int32(int32(part.PartNumber)),
 		}
+	}
+
+	fmt.Printf("📋 CompleteMultipartUpload: uploadID=%s, key=%s, parts=%d\n", uploadID, key, len(parts))
+	for i, part := range parts {
+		fmt.Printf("   Part %d: PartNumber=%d, ETag=%s\n", i+1, part.PartNumber, part.ETag)
 	}
 
 	_, err := c.s3Client.CompleteMultipartUpload(ctx, &s3.CompleteMultipartUploadInput{

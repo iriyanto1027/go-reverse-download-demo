@@ -81,14 +81,15 @@ type ResponseMessage struct {
 
 // DownloadFileResponse is the payload for a download file response
 type DownloadFileResponse struct {
-	UploadID       string    `json:"upload_id"`
-	FilePath       string    `json:"file_path"`
-	FileSize       int64     `json:"file_size"`
-	TotalParts     int       `json:"total_parts"`
-	CompletedParts int       `json:"completed_parts"`
-	StartTime      time.Time `json:"start_time,omitempty"`
-	EndTime        time.Time `json:"end_time,omitempty"`
-	S3Key          string    `json:"s3_key,omitempty"`
+	UploadID       string         `json:"upload_id"`
+	FilePath       string         `json:"file_path"`
+	FileSize       int64          `json:"file_size"`
+	TotalParts     int            `json:"total_parts"`
+	CompletedParts int            `json:"completed_parts"`
+	StartTime      time.Time      `json:"start_time,omitempty"`
+	EndTime        time.Time      `json:"end_time,omitempty"`
+	S3Key          string         `json:"s3_key,omitempty"`
+	ETags          map[int]string `json:"etags,omitempty"` // part number -> ETag
 }
 
 // StatusMessage is sent periodically from client to server for progress updates
@@ -102,15 +103,16 @@ type StatusMessage struct {
 
 // UploadStatus contains the current upload progress
 type UploadStatus struct {
-	UploadID       string    `json:"upload_id"`
-	FilePath       string    `json:"file_path"`
-	FileSize       int64     `json:"file_size"`
-	TotalParts     int       `json:"total_parts"`
-	CompletedParts int       `json:"completed_parts"`
-	BytesUploaded  int64     `json:"bytes_uploaded"`
-	Progress       float64   `json:"progress"`
-	StartTime      time.Time `json:"start_time"`
-	LastUpdate     time.Time `json:"last_update"`
+	UploadID       string         `json:"upload_id"`
+	FilePath       string         `json:"file_path"`
+	FileSize       int64          `json:"file_size"`
+	TotalParts     int            `json:"total_parts"`
+	CompletedParts int            `json:"completed_parts"`
+	BytesUploaded  int64          `json:"bytes_uploaded"`
+	Progress       float64        `json:"progress"`
+	StartTime      time.Time      `json:"start_time"`
+	LastUpdate     time.Time      `json:"last_update"`
+	ETags          map[int]string `json:"etags,omitempty"` // part number -> ETag
 }
 
 // SystemInfo contains system information from the client

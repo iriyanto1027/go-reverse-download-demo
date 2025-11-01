@@ -20,6 +20,8 @@ type Client struct {
 	token          string
 	conn           *websocket.Conn
 	mu             sync.RWMutex
+	writeMu        sync.Mutex // Protects concurrent writes
+	handlersWg     sync.WaitGroup // Tracks active message handlers
 	reconnectDelay time.Duration
 	maxReconnect   time.Duration
 	messageHandler MessageHandler
@@ -96,6 +98,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	c.conn = conn
 	c.connected = true
+	log.Printf("Connect: conn set, conn=%v, connected=%v, client=%p", c.conn != nil, c.connected, c)
 	c.mu.Unlock()
 
 	log.Printf("✅ Connected to server as client: %s", c.clientID)
@@ -165,21 +168,37 @@ func (c *Client) Stop() {
 	c.disconnect()
 }
 
+// SetMessageHandler sets the message handler for the client
+func (c *Client) SetMessageHandler(handler MessageHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.messageHandler = handler
+}
+
 // disconnect closes the connection
 func (c *Client) disconnect() {
+	log.Printf("disconnect: called, waiting for active handlers...")
+	// Wait for all active message handlers to complete
+	c.handlersWg.Wait()
+	log.Printf("disconnect: all handlers done, proceeding with disconnect")
+	
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.conn != nil {
+		log.Printf("disconnect: closing connection")
 		c.conn.Close()
 		c.conn = nil
 	}
 	c.connected = false
+	log.Printf("disconnect: done, connected=false")
 }
 
 // readPump reads messages from the server
 func (c *Client) readPump(ctx context.Context) {
+	log.Printf("readPump: started")
 	defer func() {
+		log.Printf("readPump: exiting and disconnecting")
 		c.disconnect()
 		close(c.doneChan)
 	}()
@@ -189,8 +208,11 @@ func (c *Client) readPump(ctx context.Context) {
 	c.mu.RUnlock()
 
 	if conn == nil {
+		log.Printf("readPump: connection is nil at start, exiting")
 		return
 	}
+
+	log.Printf("readPump: setting read deadline and pong handler")
 
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	conn.SetPongHandler(func(string) error {
@@ -201,19 +223,28 @@ func (c *Client) readPump(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("readPump: context done")
 			return
 		default:
 			_, message, err := conn.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					log.Printf("WebSocket error: %v", err)
+				} else {
+					log.Printf("readPump: read error: %v", err)
 				}
 				return
 			}
 
-			if err := c.handleMessage(message); err != nil {
-				log.Printf("Error handling message: %v", err)
-			}
+			// Handle message in a separate goroutine to avoid blocking readPump
+			// This prevents connection timeout when processing long-running tasks
+			c.handlersWg.Add(1)
+			go func(msg []byte) {
+				defer c.handlersWg.Done()
+				if err := c.handleMessage(msg); err != nil {
+					log.Printf("Error handling message: %v", err)
+				}
+			}(message)
 		}
 	}
 }
@@ -223,11 +254,16 @@ func (c *Client) writePump(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	log.Printf("writePump: started")
+	defer log.Printf("writePump: exiting")
+
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("writePump: context done")
 			return
 		case <-c.doneChan:
+			log.Printf("writePump: done channel closed")
 			return
 		case <-ticker.C:
 			c.mu.RLock()
@@ -235,10 +271,16 @@ func (c *Client) writePump(ctx context.Context) {
 			c.mu.RUnlock()
 
 			if conn == nil {
+				log.Printf("writePump: connection is nil, exiting")
 				return
 			}
 
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			log.Printf("📡 Sending ping to server")
+			c.writeMu.Lock()
+			err := conn.WriteMessage(websocket.PingMessage, nil)
+			c.writeMu.Unlock()
+
+			if err != nil {
 				log.Printf("Failed to send ping: %v", err)
 				return
 			}
@@ -248,6 +290,12 @@ func (c *Client) writePump(ctx context.Context) {
 
 // handleMessage processes incoming messages
 func (c *Client) handleMessage(message []byte) error {
+	c.mu.RLock()
+	connStatus := c.conn != nil
+	connectedStatus := c.connected
+	c.mu.RUnlock()
+	log.Printf("handleMessage: start, conn=%v, connected=%v, client=%p", connStatus, connectedStatus, c)
+	
 	// Parse base message to determine type
 	var baseMsg sharedModels.WebSocketMessage
 	if err := json.Unmarshal(message, &baseMsg); err != nil {
@@ -279,9 +327,13 @@ func (c *Client) handleMessage(message []byte) error {
 func (c *Client) SendResponse(status sharedModels.ResponseStatus, commandID string, action sharedModels.CommandAction, payload interface{}, errMsg string) error {
 	c.mu.RLock()
 	conn := c.conn
+	connected := c.connected
 	c.mu.RUnlock()
 
+	log.Printf("📤 SendResponse: conn=%v, connected=%v, client=%p", conn != nil, connected, c)
+	
 	if conn == nil {
+		log.Printf("❌ SendResponse failed: connection is nil")
 		return fmt.Errorf("not connected")
 	}
 
@@ -298,7 +350,16 @@ func (c *Client) SendResponse(status sharedModels.ResponseStatus, commandID stri
 		Error:     errMsg,
 	}
 
-	return conn.WriteJSON(response)
+	log.Printf("📤 Sending response: status=%s, action=%s", status, action)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	err := conn.WriteJSON(response)
+	if err != nil {
+		log.Printf("❌ Failed to send response: %v", err)
+	} else {
+		log.Printf("✅ Response sent successfully")
+	}
+	return err
 }
 
 // SendStatus sends a status message to the server
@@ -308,6 +369,7 @@ func (c *Client) SendStatus(status string, currentUpload *sharedModels.UploadSta
 	c.mu.RUnlock()
 
 	if conn == nil {
+		log.Printf("❌ SendStatus failed: connection is nil")
 		return fmt.Errorf("not connected")
 	}
 
@@ -322,7 +384,14 @@ func (c *Client) SendStatus(status string, currentUpload *sharedModels.UploadSta
 		SystemInfo:    systemInfo,
 	}
 
-	return conn.WriteJSON(statusMsg)
+	log.Printf("📤 Sending status: %s", status)
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	err := conn.WriteJSON(statusMsg)
+	if err != nil {
+		log.Printf("❌ Failed to send status: %v", err)
+	}
+	return err
 }
 
 // SendPong sends a pong message
@@ -342,6 +411,8 @@ func (c *Client) SendPong() error {
 		},
 	}
 
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	return conn.WriteJSON(pong)
 }
 

@@ -1,23 +1,23 @@
-version: '3.8'
-
 services:
   # LocalStack - Local AWS Services (S3)
   localstack:
     image: localstack/localstack:latest
     container_name: localstack-s3
     ports:
-      - "4566:4566"            # LocalStack Gateway
-      - "4510-4559:4510-4559"  # External services port range
+      - "4566:4566" # LocalStack Gateway
+      - "4510-4559:4510-4559" # External services port range
     environment:
       - SERVICES=s3
       - DEBUG=1
-      - DATA_DIR=/tmp/localstack/data
-      - DOCKER_HOST=unix:///var/run/docker.sock
     volumes:
-      - "./localstack-data:/tmp/localstack"
-      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "localstack-data:/var/lib/localstack"
     networks:
       - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Server - Cloud-hosted application
   server:
@@ -37,12 +37,26 @@ services:
       - S3_BUCKET_NAME=file-download-system-uploads
       - S3_PRESIGNED_URL_EXPIRY=15m
       - S3_CHUNK_SIZE=5242880
-      - JWT_SECRET=dev-secret-key-change-in-production
+      # - JWT_SECRET=dev-secret-key-change-in-production  # Disabled for development
       - LOG_LEVEL=debug
     depends_on:
-      - localstack
+      localstack:
+        condition: service_healthy
     networks:
       - app-network
+    # healthcheck:
+    #   test:
+    #     [
+    #       "CMD",
+    #       "wget",
+    #       "--quiet",
+    #       "--tries=1",
+    #       "--spider",
+    #       "http://localhost:8080/health",
+    #     ]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
     # Optional: Uncomment to run server without building image
     # volumes:
     #   - .:/app

@@ -69,7 +69,8 @@ func (c *ClientConnection) IsAlive(timeout time.Duration) bool {
 
 // UploadStatus represents the status of an ongoing upload
 type UploadStatus struct {
-	UploadID       string
+	UploadID       string // Internal upload ID for tracking
+	S3UploadID     string // S3 multipart upload ID from CreateMultipartUpload
 	ClientID       string
 	FilePath       string
 	S3Bucket       string
@@ -131,6 +132,20 @@ func (u *UploadStatus) UpdateProgress(partNumber int, etag string, bytesUploaded
 	if u.Status == UploadStatePending {
 		u.Status = UploadStateInProgress
 	}
+}
+
+// SetS3UploadID sets the S3 multipart upload ID
+func (u *UploadStatus) SetS3UploadID(s3UploadID string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.S3UploadID = s3UploadID
+}
+
+// GetS3UploadID safely retrieves the S3 upload ID
+func (u *UploadStatus) GetS3UploadID() string {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.S3UploadID
 }
 
 // MarkCompleted marks the upload as completed

@@ -141,6 +141,7 @@ func (h *CommandHandler) handleDownloadFile(cmd *sharedModels.CommandMessage) er
 			StartTime:      time.Now().Add(-result.Duration),
 			EndTime:        time.Now(),
 			S3Key:          uploadConfig.Key,
+			ETags:          result.ETags, // Include ETags for multipart completion
 		},
 		"",
 	)

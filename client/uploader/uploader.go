@@ -67,16 +67,24 @@ func (u *Uploader) Upload(progressCallback ProgressCallback) (*UploadResult, err
 
 	log.Printf("Uploading file: %s (%.2f MB)", u.filePath, float64(fileSize)/(1024*1024))
 	log.Printf("Upload ID: %s", u.uploadConfig.UploadID)
-	log.Printf("Total parts: %d", len(u.uploadConfig.PresignedURLs))
+	
+	// Calculate actual number of parts needed based on file size
+	actualPartsNeeded := int((fileSize + u.uploadConfig.ChunkSize - 1) / u.uploadConfig.ChunkSize)
+	if actualPartsNeeded > len(u.uploadConfig.PresignedURLs) {
+		return nil, fmt.Errorf("not enough presigned URLs: need %d, have %d", actualPartsNeeded, len(u.uploadConfig.PresignedURLs))
+	}
+	
+	log.Printf("Total parts: %d (using %d out of %d presigned URLs)", actualPartsNeeded, actualPartsNeeded, len(u.uploadConfig.PresignedURLs))
 
 	// Upload each part
 	etags := make(map[int]string)
 	var bytesUploaded int64
 	var mu sync.Mutex
 
-	totalParts := len(u.uploadConfig.PresignedURLs)
+	// Only use the number of presigned URLs we actually need
+	presignedURLsToUse := u.uploadConfig.PresignedURLs[:actualPartsNeeded]
 
-	for _, presignedURL := range u.uploadConfig.PresignedURLs {
+	for _, presignedURL := range presignedURLsToUse {
 		partNumber := presignedURL.PartNumber
 
 		// Calculate part size
@@ -95,7 +103,7 @@ func (u *Uploader) Upload(progressCallback ProgressCallback) (*UploadResult, err
 		}
 
 		// Upload part
-		log.Printf("Uploading part %d/%d (%.2f MB)", partNumber, totalParts, float64(partSize)/(1024*1024))
+		log.Printf("Uploading part %d/%d (%.2f MB)", partNumber, actualPartsNeeded, float64(partSize)/(1024*1024))
 
 		etag, err := u.uploadPart(presignedURL.URL, partData)
 		if err != nil {
@@ -108,11 +116,11 @@ func (u *Uploader) Upload(progressCallback ProgressCallback) (*UploadResult, err
 		bytesUploaded += partSize
 		mu.Unlock()
 
-		log.Printf("✅ Part %d/%d uploaded (ETag: %s)", partNumber, totalParts, etag)
+		log.Printf("✅ Part %d/%d uploaded (ETag: %s)", partNumber, actualPartsNeeded, etag)
 
 		// Call progress callback
 		if progressCallback != nil {
-			progressCallback(partNumber, totalParts, bytesUploaded, fileSize)
+			progressCallback(partNumber, actualPartsNeeded, bytesUploaded, fileSize)
 		}
 	}
 
@@ -123,7 +131,7 @@ func (u *Uploader) Upload(progressCallback ProgressCallback) (*UploadResult, err
 		Success:        true,
 		UploadID:       u.uploadConfig.UploadID,
 		FileSize:       fileSize,
-		TotalParts:     totalParts,
+		TotalParts:     actualPartsNeeded,
 		CompletedParts: len(etags),
 		ETags:          etags,
 		Duration:       duration,
